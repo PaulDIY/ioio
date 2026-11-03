@@ -64,9 +64,11 @@ class Renderer {
     this.view.h = h;
   }
 
-  draw(dt) {
+  /** alpha: how far (0..1) the clock is between the last and the next simulation tick. */
+  draw(dt, alpha = 1) {
     const { ctx, view, game } = this;
     this.time += dt;
+    this.alpha = alpha;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = THEME.bg;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -75,7 +77,7 @@ class Renderer {
 
     this.drawGrid();
     const sel = this.ui.selection || {};
-    for (const c of game.conns) this.drawConn(c, dt, sel.conn === c);
+    for (const c of game.conns) this.drawConn(c, sel.conn === c);
     for (const n of game.nodes) if (this.visible(n)) this.drawNode(n, sel.node === n);
     if (sel.conn && game.conns.includes(sel.conn)) this.drawConnHandles(sel.conn);
     this.drawWirePreview();
@@ -104,9 +106,9 @@ class Renderer {
   }
 
   // ---- connections -----------------------------------------------------------
-  drawConn(c, dt, selected) {
+  drawConn(c, selected) {
     const { ctx } = this;
-    const pts = connRoute(c).map(toPx);
+    const route = connRoute(c), pts = route.map(toPx);
     const res = c.from.res;
     const color = res ? RESOURCES[res].color : THEME.wire;
     ctx.lineJoin = 'round';
@@ -115,20 +117,18 @@ class Renderer {
     if (selected) { ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 11; ctx.stroke(); }
     ctx.strokeStyle = '#0a0d12'; ctx.lineWidth = 6.5; ctx.stroke();
     if (c.mismatch) { ctx.setLineDash([6, 5]); ctx.strokeStyle = '#ff5b5b'; }
-    else ctx.strokeStyle = rgba(color, c.flow > 0.05 ? 0.95 : 0.5);
+    else ctx.strokeStyle = rgba(color, c.flow > 0.05 || c.items.length ? 0.95 : 0.5);
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // items in transit (visual only)
-    const len = polyLength(pts);
-    const step = BALANCE.dotSpeed * GRID * dt / Math.max(len, 1);
-    c.dots = c.dots.filter(d => (d.t += step) < 1);
-    for (const d of c.dots) {
-      const p = pointAt(pts, d.t * len);
+    // items on the belt (interpolated between simulation ticks)
+    const a = this.alpha;
+    for (const it of c.items) {
+      const p = toPx(pointAt(route, it.pd + (it.d - it.pd) * a));
       ctx.beginPath();
       ctx.arc(p.x, p.y, 3.6, 0, Math.PI * 2);
-      ctx.fillStyle = RESOURCES[d.res]?.color || '#fff';
+      ctx.fillStyle = RESOURCES[it.res]?.color || '#fff';
       ctx.fill();
       ctx.lineWidth = 1.2;
       ctx.strokeStyle = '#0a0d12';

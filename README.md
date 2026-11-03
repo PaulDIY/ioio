@@ -16,14 +16,15 @@ Debug from the dev console via `ioio.game` (e.g. `ioio.game.milestone = 3; ioio.
 - **Construction:** placing a node is free, but it's a 🏗 site until its materials arrive at its **side inputs** (one input per material, alternating left / right). Each further node of a type costs more (`BALANCE.buildCostGrowth`).
 - **Unlocking:** a building appears in the Build menu once every material it needs has been produced at least once (Spring → water → Lumberjack → wood → Quarry …).
 - **Upgrades:** once built, the side inputs take upgrade materials: 📦 buffers on the left, ⚡ speed on the right (storage: capacity / ports). A level can need several materials → several inputs on that side; rings show progress.
-- **Goals:** the Hub accepts only what the current goal still needs; everything else stops there (red dashed line). Each goal raises the max connection throughput level (that upgrade is a free button).
-- Demolishing a node loses everything delivered to it.
+- **Goals:** the Hub accepts only what the current goal still needs; everything else stops there (red dashed line). Each completed goal upgrades the throughput of all connections.
+- **Conveyor belts:** items travel along connections (`BALANCE.beltSpeed`). An output only sends while the target's input buffer plus the items already on the way stay below its capacity (the same goes for side inputs and the Hub's remaining goal amounts) — so long belts need bigger buffers.
+- Demolishing a node loses everything delivered to it; deleting a connection loses the items on it.
 
 ## Controls
 
 | Action | Gesture |
 |---|---|
-| Pan / zoom | drag empty space / pinch (mouse wheel) |
+| Pan / zoom | drag empty space or WASD / arrow keys / pinch (mouse wheel) |
 | Move node | drag it (snaps to grid, keeps connections) |
 | Connect | drag from an output (bottom) to an input (top), or just onto the target node |
 | Re-wire / delete | drag a connected port somewhere else / onto empty space |
@@ -63,7 +64,7 @@ Starting nodes are in `START_NODES`.
 left / right tracks. Override per type with `upgrades: ['speed', 'buffer']`.
 The default `upgradeCost(def, lvl, mult, growth)` = build cost × mult × growth^level, plus one extra material from
 `UPGRADE_EXTRAS` at higher levels. Per type you can set `upgradeCost: {...}` as a different base.
-Connection levels are capped by `throughput.maxAt(goalsDone)`.
+All connections are set to level `throughput.maxAt(goalsDone)` whenever a goal is completed.
 
 **Balance knobs:** `BALANCE` (build cost growth, tick, offline cap, node size).
 

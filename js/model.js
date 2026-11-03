@@ -150,9 +150,19 @@ class GameNode {
     if (port.isSide) { const it = this.sideItem(port); return !!it && it.res === res; }
     return this.inAccepts(port, res, game);
   }
+  /** How many more `res` fit into this input right now (items still on a belt not counted). */
+  room(port, res, game) {
+    if (port.isSide) { const it = this.sideItem(port); return it ? it.amount - it.got : 0; }
+    return this.built ? this.inRoom(port, res, game) : 0;
+  }
+  /** Items of `res` on their way to this input (they already count against its room). */
+  incoming(port, res) {
+    if (port.isSide) return port.conn ? port.conn.items.length : 0;
+    return this.inIncoming(port, res);
+  }
+  /** May an output put another `res` on the belt towards this input? */
   canAccept(port, res, game) {
-    if (port.isSide) { const it = this.sideItem(port); return !!it && it.res === res && it.got < it.amount; }
-    return this.built && this.inAccepts(port, res, game) && this.inHasSpace(port, res, game);
+    return this.accepts(port, res, game) && this.room(port, res, game) - this.incoming(port, res) >= 1;
   }
   accept(port, res, game) {
     if (port.isSide) this.feedSide(port, res, game);
@@ -162,9 +172,13 @@ class GameNode {
   peek(port) { const b = port.buffer; return this.built && b && b.amount >= 1 ? b.res : null; }
   take(port) { port.buffer.amount -= 1; }
 
-  // regular (top) inputs — overridden by the hub
+  // regular (top) inputs — overridden by storage and the hub
   inAccepts(port, res) { const b = port.buffer; return !!b && (b.res == null || b.res === res); }
-  inHasSpace(port) { return port.buffer.amount + 1 <= port.buffer.cap; }
+  inRoom(port) { return port.buffer.cap - port.buffer.amount; }
+  /** Inputs sharing a buffer share its room, so count the belts into all of them. */
+  inIncoming(port) {
+    return this.inPorts.reduce((n, p) => n + (p.buffer === port.buffer && p.conn ? p.conn.items.length : 0), 0);
+  }
   inAccept(port, res) { const b = port.buffer; if (b.res == null) b.res = res; b.amount += 1; }
 
   init() {}
@@ -233,6 +247,12 @@ class StorageNode extends GameNode {
     while (this.outPorts.length < n) this.outPorts.push(new Port(this, 'out', this.outPorts.length, this.buf));
   }
   clear() { this.buf.amount = 0; this.buf.res = null; }
+  /** While empty, the storage is already locked to whatever is on a belt towards it. */
+  inAccepts(port, res) {
+    let r = this.buf.res;
+    for (const p of this.inPorts) if (r == null && p.conn && p.conn.items.length) r = p.conn.items[0].res;
+    return r == null || r === res;
+  }
 }
 
 /** Accepts only what the current goal still needs. */
@@ -243,7 +263,12 @@ class HubNode extends GameNode {
     while (this.inPorts.length < (this.def.ports || 4)) this.inPorts.push(new Port(this, 'in', this.inPorts.length, null));
   }
   inAccepts(port, res, game) { const m = game.currentGoal; return !!m && !!m.need[res]; }
-  inHasSpace(port, res, game) { return (game.msProgress[res] || 0) < game.currentGoal.need[res]; }
+  inRoom(port, res, game) { const m = game.currentGoal; return m && m.need[res] ? m.need[res] - (game.msProgress[res] || 0) : 0; }
+  inIncoming(port, res) {
+    let n = 0;
+    for (const p of this.inPorts) if (p.conn) for (const it of p.conn.items) if (it.res === res) n++;
+    return n;
+  }
   inAccept(port, res, game) { game.deliver(res); }
 }
 
@@ -255,7 +280,11 @@ function createNode(type, x, y, levels) {
 }
 
 /* --------------------------------------------------------------------------
- *  Connections: move items from one output port to one input port.
+ *  Connections: conveyor belts from one output port to one input port.
+ *  Items leave the output at `rate` per second, ride along the route at
+ *  BALANCE.beltSpeed and are handed over when they reach the input. An output
+ *  only sends while the input's room exceeds what is already on the way, so
+ *  arriving items fit. Deleting a connection loses the items on it.
  * -------------------------------------------------------------------------- */
 class Connection {
   constructor(from, to) {
@@ -263,33 +292,58 @@ class Connection {
     this.from = from;          // output port
     this.to = to;              // input port (top or side)
     this.waypoints = [];       // [{x, y}] grid points
-    this.level = 0;            // throughput level
+    this.level = 0;            // throughput level (set by the game, see Game.maxConnLevel)
     this.acc = 0;              // fractional item budget
-    this.flow = 0;             // smoothed items/s (display)
+    this.flow = 0;             // smoothed items/s arriving (display)
     this.mismatch = false;     // item type not accepted by target
-    this.dots = [];            // visual items in transit
+    this.items = [];           // on the belt, front first: { res, d, pd } — d = cells travelled, pd = d one tick ago (drawing)
     from.conn = this;
     to.conn = this;
   }
   get rate() { return UPGRADES.throughput.value(this.level, CONNECTION); }
+  /** Belt length in cells. */
+  get length() { return polyLength(connRoute(this)); }
 
-  update(dt, game, visual) {
-    const rate = this.rate;
-    this.acc = Math.min(this.acc + rate * dt, Math.max(1, rate * dt));
-    let moved = 0;
+  update(dt, game) {
+    const rate = this.rate, speed = BALANCE.beltSpeed, len = this.length;
+    const gap = 0.8 * speed / rate; // closest spacing of queued items
     this.mismatch = false;
+
+    // move: items can't pass the end or the item ahead
+    let limit = len;
+    for (const it of this.items) {
+      it.pd = it.d;
+      it.d = Math.min(it.d + speed * dt, limit);
+      limit = Math.max(0, it.d - gap);
+    }
+
+    // hand over what reached the end
+    let moved = 0;
+    while (this.items.length && this.items[0].d >= len) {
+      const res = this.items[0].res;
+      if (!this.to.node.accepts(this.to, res, game)) { this.mismatch = true; break; }
+      if (this.to.node.room(this.to, res, game) < 1) break;
+      this.items.shift();
+      this.to.node.accept(this.to, res, game);
+      moved++;
+      if (this.to.conn !== this) return; // target input was removed (e.g. upgrade finished)
+    }
+
+    // load new items (several per tick when fast-forwarding, spread out along the belt)
+    this.acc = Math.min(this.acc + rate * dt, 1 + rate * dt);
     while (this.acc >= 1) {
+      const last = this.items[this.items.length - 1];
+      const d = Math.min((this.acc - 1) / rate * speed, len, last ? last.d - gap : len);
+      if (d < 0) break; // start of the belt is still occupied
       const res = this.from.node.peek(this.from);
       if (!res) break;
       if (!this.to.node.accepts(this.to, res, game)) { this.mismatch = true; break; }
       if (!this.to.node.canAccept(this.to, res, game)) break;
       this.from.node.take(this.from);
-      this.to.node.accept(this.to, res, game);
+      this.items.push({ res, d, pd: d });
       this.acc -= 1;
-      moved++;
-      if (visual && this.dots.length < 30) this.dots.push({ t: 0, res });
-      if (this.to.conn !== this) break; // target input was removed (e.g. upgrade finished)
     }
+
     // display flow: average over ~1 s windows
     this.cnt = (this.cnt || 0) + moved;
     this.win = (this.win || 0) + dt;
@@ -341,6 +395,7 @@ class Game {
     const m = this.currentGoal;
     this.milestone++;
     this.msProgress = {};
+    for (const c of this.conns) c.level = this.maxConnLevel;
     this.emit('goal', m);
     if (this.milestone >= MILESTONES.length) { this.won = true; this.emit('win'); }
   }
@@ -373,14 +428,8 @@ class Game {
     return this.addNode(node);
   }
 
-  /** Highest throughput level connections may have right now. */
+  /** Throughput level of every connection (raised by completed goals). */
   get maxConnLevel() { return UPGRADES.throughput.maxAt(this.milestone); }
-
-  upgradeConnection(conn) {
-    if (conn.level >= this.maxConnLevel) return false;
-    conn.level++;
-    return true;
-  }
 
   // ---- nodes & connections -------------------------------------------------
   addNode(node) { this.nodes.push(node); return node; }
@@ -412,7 +461,7 @@ class Game {
   }
 
   /** Connect two ports. Existing connections on them are replaced. `carry` restores
-   *  level/waypoints of a re-wired connection. */
+   *  waypoints (and items on the belt, if given) of a re-wired or loaded connection. */
   connect(a, b, carry = null) {
     const err = this.connectError(a, b);
     if (err) { this.emit('error', err); return null; }
@@ -420,16 +469,19 @@ class Game {
     if (from.conn) this.disconnect(from.conn);
     if (to.conn) this.disconnect(to.conn);
     const c = new Connection(from, to);
+    c.level = this.maxConnLevel;
     if (carry) {
-      c.level = Math.min(carry.level || 0, this.maxConnLevel);
       c.waypoints = (carry.waypoints || []).map(p => ({ ...p }));
+      c.items = (carry.items || []).map(it => ({ ...it }));
     }
     this.conns.push(c);
     return c;
   }
 
+  /** Remove a connection; whatever is still on the belt is lost. */
   disconnect(conn) {
     this.conns = this.conns.filter(c => c !== conn);
+    conn.items = [];
     if (conn.from.conn === conn) conn.from.conn = null;
     if (conn.to.conn === conn) conn.to.conn = null;
   }
@@ -452,16 +504,16 @@ class Game {
   }
 
   // ---- simulation -----------------------------------------------------------
-  tick(dt, visual = true) {
+  tick(dt) {
     for (const n of this.nodes) n.update(dt, this);
-    for (const c of [...this.conns]) if (this.conns.includes(c)) c.update(dt, this, visual);
+    for (const c of [...this.conns]) if (this.conns.includes(c)) c.update(dt, this);
     this.time += dt;
   }
 
   /** Fast-forward (offline progress / background tab). */
   simulate(seconds) {
     const step = Math.max(BALANCE.tick, 0.25);
-    for (let t = 0; t < seconds; t += step) this.tick(Math.min(step, seconds - t), false);
+    for (let t = 0; t < seconds; t += step) this.tick(Math.min(step, seconds - t));
   }
 
   // ---- save / load -----------------------------------------------------------
@@ -481,7 +533,10 @@ class Game {
         bufs: n.buffers.map(b => [b.res, b.amount]),
         progress: n.progress || 0, running: !!n.running,
       })),
-      conns: this.conns.map(c => ({ from: portRef(c.from), to: portRef(c.to), wp: c.waypoints, level: c.level })),
+      conns: this.conns.map(c => ({
+        from: portRef(c.from), to: portRef(c.to), wp: c.waypoints,
+        items: c.items.map(it => [it.res, Math.round(it.d * 100) / 100]),
+      })),
     };
   }
 
@@ -544,7 +599,7 @@ class Game {
     for (const s of d.conns) {
       const fp = findPort(s.from), tp = findPort(s.to);
       if (!fp || !tp || this.connectError(fp, tp)) continue;
-      this.connect(fp, tp, { level: s.level, waypoints: s.wp });
+      this.connect(fp, tp, { waypoints: s.wp, items: (s.items || []).map(([res, d]) => ({ res, d, pd: d })) });
     }
   }
 }

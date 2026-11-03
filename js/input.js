@@ -6,10 +6,16 @@
  *  One finger:  empty space → pan      node → move       port → wire
  *               "+" handle → new waypoint   waypoint → move (tap = delete)
  *  Two fingers: pan + pinch zoom.     Mouse wheel: zoom.
+ *  Keyboard:    WASD / arrow keys → pan.
  * ========================================================================== */
 
 const DRAG_THRESHOLD = 7;   // px before a press becomes a drag
 const TOUCH_RADIUS = 18;    // px hit radius for ports & handles
+const KEY_PAN_SPEED = 600;  // screen px / second
+const PAN_KEYS = {          // KeyboardEvent.code → [dx, dy]
+  KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1],
+  KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0],
+};
 
 class Input {
   constructor(canvas, game, view, ui) {
@@ -26,6 +32,14 @@ class Input {
       this.view.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
     }, { passive: false });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
+    this.keys = new Set(); // held pan keys
+    addEventListener('keydown', e => {
+      if (!PAN_KEYS[e.code] || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, textarea, select')) return;
+      e.preventDefault();
+      this.keys.add(e.code);
+    });
+    addEventListener('keyup', e => this.keys.delete(e.code));
+    addEventListener('blur', () => this.keys.clear());
   }
 
   /** Pointer position in grid units. */
@@ -155,7 +169,7 @@ class Input {
     if (g.kind === 'wire' && g.port.conn) {
       // pick up the existing connection at this end; the other end stays anchored
       const c = g.port.conn;
-      g.carry = { level: c.level, waypoints: c.waypoints, original: [c.from, c.to] };
+      g.carry = { waypoints: c.waypoints, items: c.items, original: [c.from, c.to] };
       g.port = g.port === c.to ? c.from : c.to;
       this.game.disconnect(c);
       if (this.ui.selection && this.ui.selection.conn === c) this.ui.select(null);
@@ -211,7 +225,9 @@ class Input {
   drop(g) {
     if (g.kind !== 'wire') return;
     const target = this.wireTarget(g.x, g.y, g.port);
-    const c = target && this.game.connect(g.port, target, g.carry);
+    // items on the belt survive only if it's dropped back where it was
+    const carry = g.carry && !g.carry.original.includes(target) ? { ...g.carry, items: null } : g.carry;
+    const c = target && this.game.connect(g.port, target, carry);
     if (c) { if (g.carry) this.ui.select({ conn: c }, false); return; }
     if (g.carry) this.ui.toast('Connection removed');
   }
@@ -222,18 +238,21 @@ class Input {
     if (g && g.kind === 'wire' && g.carry) this.game.connect(g.carry.original[0], g.carry.original[1], g.carry);
   }
 
-  /** Auto-pan when dragging near the screen edge. Called every frame. */
+  /** Keyboard pan, and auto-pan when dragging near the screen edge. Called every frame. */
   update(dt) {
-    const g = this.g;
-    if (!g || !g.moved || !['wire', 'node', 'waypoint'].includes(g.kind)) return;
-    const v = this.view, m = 40;
-    const top = 70, bottom = v.h - 90;
-    const vx = g.x < m ? -1 : g.x > v.w - m ? 1 : 0;
-    const vy = g.y < top ? -1 : g.y > bottom ? 1 : 0;
+    const v = this.view, g = this.g;
+    let vx = 0, vy = 0;
+    for (const k of this.keys) { vx += PAN_KEYS[k][0]; vy += PAN_KEYS[k][1]; }
+    const dragging = g && g.moved && ['wire', 'node', 'waypoint'].includes(g.kind);
+    if (dragging && !vx && !vy) {
+      const m = 40, top = 70, bottom = v.h - 90;
+      vx = g.x < m ? -1 : g.x > v.w - m ? 1 : 0;
+      vy = g.y < top ? -1 : g.y > bottom ? 1 : 0;
+    }
     if (!vx && !vy) return;
-    const speed = 450 * dt / v.zoom;
-    v.x += vx * speed;
-    v.y += vy * speed;
-    this.drag(g, 0, 0);
+    const speed = (dragging ? 450 : KEY_PAN_SPEED) * dt / v.zoom / Math.hypot(Math.sign(vx), Math.sign(vy));
+    v.x += Math.sign(vx) * speed;
+    v.y += Math.sign(vy) * speed;
+    if (dragging) this.drag(g, 0, 0);
   }
 }

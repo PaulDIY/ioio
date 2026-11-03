@@ -200,7 +200,7 @@ class UI {
   goalsHTML(live) {
     const g = this.game;
     const rows = MILESTONES.map((m, i) => {
-      const unl = i === MILESTONES.length - 1 ? '🏆 Victory' : `connections up to Lv ${UPGRADES.throughput.maxAt(i + 1)}`;
+      const unl = i === MILESTONES.length - 1 ? '🏆 Victory' : `all connections → Lv ${UPGRADES.throughput.maxAt(i + 1)}`;
       if (i < g.milestone) return `<div class="goal done">✓ <b>${m.title}</b> <small>${unl}</small></div>`;
       if (i > g.milestone) return `<div class="goal locked">🔒 Goal ${i + 1} · ???</div>`;
       const needs = Object.keys(m.need).map(r => {
@@ -227,7 +227,7 @@ class UI {
         <button class="danger" data-act="reset">🗑 Reset game</button>
       </div>
       <div class="help">
-        <p><b>Pan</b> drag empty space · <b>Zoom</b> pinch / mouse wheel</p>
+        <p><b>Pan</b> drag empty space or WASD / arrow keys · <b>Zoom</b> pinch / mouse wheel</p>
         <p><b>Move</b> drag a node · <b>Connect</b> drag from an output (bottom) to an input (top) or onto a node</p>
         <p><b>Build</b> placing is free, but a node only works after its 🏗 materials arrive at its side inputs (one input per material)</p>
         <p><b>Upgrade</b> afterwards the side inputs take upgrade materials: 📦 buffers (left), ⚡ speed (right). Rings show progress.</p>
@@ -272,16 +272,17 @@ class UI {
     const res = c.from.res;
     live.flow = `${c.flow.toFixed(2)}/s`;
     const why = c.mismatch ? `<div class="warn">${c.to.node.name} doesn't take ${resName(res)} ${c.to.isSide ? 'at this input' : 'right now'}</div>` : '';
-    const u = UPGRADES.throughput, max = g.maxConnLevel, can = c.level < max;
-    const row = `<div class="upgs"><button class="upg ${can ? '' : 'poor'}" data-act="cupg" ${can ? '' : 'disabled'}>
-        <span class="ul">${u.icon} ${u.label} <small>Lv ${c.level} / ${max}</small></span>
-        <span class="uv">${u.format(c.rate)}${can ? ` → <b>${u.format(u.value(c.level + 1, CONNECTION))}</b>` : ''}</span>
-        <span class="uc">${can ? '<span class="free">free</span>' : '🔒 next goal'}</span></button></div>`;
+    const u = UPGRADES.throughput, last = g.milestone >= MILESTONES.length;
+    const row = `<div class="upgs"><div class="upg">
+        <span class="ul">${u.icon} ${u.label} <small>Lv ${c.level}</small></span>
+        <span class="uv">${u.format(c.rate)}${last ? '' : ` → <b>${u.format(u.value(UPGRADES.throughput.maxAt(g.milestone + 1), CONNECTION))}</b>`}</span>
+        <span class="uc">${last ? '<small>max</small>' : '🎯 next goal'}</span></div></div>`;
     const track = c.to.isSide && c.to.node.sideTrack(c.to.side);
     const target = track ? `${c.to.node.name} ${track.key === 'build' ? '🏗' : UPGRADES[track.key].icon}` : c.to.node.name;
     return this.head('Connection', `${c.from.node.name} → ${target}`) +
       `<div class="info"><div>${res ? resIcon(res) + ' ' + resName(res) : 'Nothing yet'} · flow <span data-live="flow"></span> of ${c.rate.toFixed(1)}/s</div>${why}
-       <div class="sub">Drag a ＋ handle to add a waypoint, tap a waypoint to remove it. Each completed goal unlocks more throughput levels.</div></div>` +
+       <div class="sub">Items ride the belt to the target; it only sends what still fits there. Deleting the connection loses what's on it. Each completed goal upgrades all connections.</div>
+       <div class="sub">Drag a ＋ handle to add a waypoint, tap a waypoint to remove it.</div></div>` +
       row +
       `<div class="actions">${c.waypoints.length ? '<button data-act="clearwp">Remove waypoints</button>' : ''}
         <button class="danger" data-act="delconn">Delete connection</button></div>`;
@@ -301,7 +302,6 @@ class UI {
         if (n) { this.select({ node: n }, false); this.toast(`${n.name} built — drag it into place`); }
         return;
       }
-      case 'cupg': g.upgradeConnection(sel.conn); break;
       case 'demolish': {
         const n = sel.node;
         const invested = (n.built && Object.keys(n.buildCost).length) || Object.keys(n.got).length;
@@ -339,7 +339,7 @@ class UI {
       const u = UPGRADES[data.key];
       this.toast(`${data.node.name}: ${u.icon} ${u.label} → Lv ${data.node.level(data.key)}`, 'good');
     } else if (type === 'goal') {
-      this.toast(`Goal complete: ${data.title}! Connections up to Lv ${this.game.maxConnLevel}`, 'big');
+      this.toast(`Goal complete: ${data.title}! All connections upgraded to Lv ${this.game.maxConnLevel}`, 'big');
     } else if (type === 'win') this.toast('🏆 The Lighthouse shines! You finished all goals.', 'big');
     else if (type === 'error') this.toast(data, 'bad');
   }

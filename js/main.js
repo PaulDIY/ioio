@@ -29,11 +29,11 @@
     if (dt > 1) { game.simulate(Math.min(dt, BALANCE.offlineCapSec)); dt = 0.1; } // tab was in background
     else acc += dt;
     let steps = 0;
-    while (acc >= BALANCE.tick && steps++ < 10) { game.tick(BALANCE.tick, true); acc -= BALANCE.tick; }
+    while (acc >= BALANCE.tick && steps++ < 10) { game.tick(BALANCE.tick); acc -= BALANCE.tick; }
     if (steps >= 10) acc = 0;
     input.update(dt);
     ui.update(dt);
-    renderer.draw(dt);
+    renderer.draw(dt, Math.min(1, acc / BALANCE.tick));
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

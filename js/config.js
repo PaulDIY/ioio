@@ -13,7 +13,7 @@ const GRID = 20;
 const BALANCE = {
   tick: 0.05, // simulation step (seconds)
   offlineCapSec: 2 * 3600, // max offline progress simulated when you come back
-  dotSpeed: 5, // visual item speed on connections (cells / second)
+  beltSpeed: 5, // item travel speed on connections (cells / second)
   buildCostGrowth: 1.5, // each further node of a type costs × this (1 = flat)
   nodeMinWidth: 6, // cells (keep even, so ports sit on grid lines)
   nodeHeight: 4, // cells
@@ -170,7 +170,9 @@ const START_NODES = [
   { type: "spring", x: -3, y: 7 },
 ];
 
-/** Base values for connections (upgraded via UPGRADES.throughput). */
+/** Base values for connections (upgraded via UPGRADES.throughput).
+ *  Items ride along a connection like on a conveyor belt (BALANCE.beltSpeed);
+ *  throughput sets how many are put on the belt per second. */
 const CONNECTION = { throughput: 1 }; // items per second
 
 /* --------------------------------------------------------------------------
@@ -185,8 +187,8 @@ const CONNECTION = { throughput: 1 }; // items per second
  *  value(level, def)  → the stat at a given level (def = node type or CONNECTION)
  *  format(value)      → how the value is shown in the UI
  *  max                → max level
- *  Connections have no side inputs: their max level grows with completed
- *  goals → maxAt(goalsDone). Upgrading them is a free button.
+ *  Connections have no side inputs: all of them are upgraded automatically
+ *  when a goal is completed → level = maxAt(goalsDone).
  * -------------------------------------------------------------------------- */
 
 /** Multiply every amount of a cost by `mult` (rounded up). */
@@ -260,7 +262,7 @@ const UPGRADES = {
     cost: (lvl) => ({ plank: 40 * 3 ** lvl, stone: 40 * 3 ** lvl }),
   },
 
-  // ---- connections (free, unlocked by goals) -------------------------------
+  // ---- connections (all upgraded automatically by goals) -------------------
   throughput: {
     target: "connection",
     label: "Throughput",
@@ -274,7 +276,7 @@ const UPGRADES = {
 /* --------------------------------------------------------------------------
  *  GOALS (milestones) — deliver `need` to the Hub to complete, in order.
  *  The Hub only accepts what the current goal still needs.
- *  Reward: higher connection throughput levels (UPGRADES.throughput.maxAt).
+ *  Reward: every connection is upgraded (UPGRADES.throughput.maxAt).
  * -------------------------------------------------------------------------- */
 const MILESTONES = [
   { title: "Clearing", need: { wood: 20 } },
